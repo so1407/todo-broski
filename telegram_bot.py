@@ -158,6 +158,40 @@ def action_list(urgent_only: bool = False) -> str:
     return "\n".join(lines)
 
 
+def action_week() -> str:
+    from datetime import timedelta
+    tasks = read_all_tasks()
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+
+    done_this_week = [
+        t for t in tasks
+        if t.done and t.done_date and t.done_date >= week_start
+    ]
+    still_open = [t for t in tasks if not t.done]
+    urgent_open = [t for t in still_open if t.urgent or t.is_overdue]
+
+    lines = [f"📊 *Week of {week_start.isoformat()}*\n"]
+
+    if done_this_week:
+        lines.append(f"✅ *{len(done_this_week)} completed*\n")
+        grouped: dict[str, list] = {}
+        for t in done_this_week:
+            name = Path(t.source_file).stem.replace("-", " ").title()
+            grouped.setdefault(name, []).append(t)
+        for project, group in sorted(grouped.items()):
+            lines.append(f"*{project}:*")
+            for t in group:
+                lines.append(f"  ✓ {t.description}")
+            lines.append("")
+    else:
+        lines.append("No tasks completed yet this week.\n")
+
+    lines.append(f"📋 {len(still_open)} still open ({len(urgent_open)} urgent)")
+
+    return "\n".join(lines)
+
+
 def action_daily() -> str:
     from ai import generate_daily
     hours = config.get("daily", {}).get("available_hours", 6)
@@ -206,6 +240,9 @@ Generate daily list:
 
 Show board:
 {{"action": "board"}}
+
+Weekly review (what was done this week):
+{{"action": "week"}}
 
 If the message is conversational or unclear:
 {{"action": "unknown", "reply": "your friendly response asking for clarification"}}
@@ -286,6 +323,11 @@ async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @auth
+async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(action_week(), parse_mode="Markdown")
+
+
+@auth
 async def cmd_board(update: Update, context: ContextTypes.DEFAULT_TYPE):
     refresh_board()
     board_path = TASKS_DIR / "board.html"
@@ -332,6 +374,8 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "daily":
         await update.message.reply_text("Generating...")
         await update.message.reply_text(action_daily())
+    elif action == "week":
+        await update.message.reply_text(action_week(), parse_mode="Markdown")
     elif action == "board":
         refresh_board()
         board_path = TASKS_DIR / "board.html"
@@ -411,6 +455,7 @@ async def run_all():
     tg_app.add_handler(CommandHandler("list", cmd_list))
     tg_app.add_handler(CommandHandler("urgent", cmd_urgent))
     tg_app.add_handler(CommandHandler("daily", cmd_daily))
+    tg_app.add_handler(CommandHandler("week", cmd_week))
     tg_app.add_handler(CommandHandler("board", cmd_board))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
 

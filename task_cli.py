@@ -222,6 +222,66 @@ def daily(send):
         _send_telegram(content, config)
 
 
+# ── week ─────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--send", is_flag=True, help="Also send via Telegram")
+def week(send):
+    """Show weekly report: what you got done + what's still open."""
+    from datetime import timedelta
+
+    tasks = read_all_tasks()
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())  # Monday
+
+    # Tasks completed this week
+    done_this_week = [
+        t for t in tasks
+        if t.done and t.done_date and t.done_date >= week_start
+    ]
+    still_open = [t for t in tasks if not t.done]
+    urgent_open = [t for t in still_open if t.urgent or t.is_overdue]
+
+    lines = [f"  {click.style(f'Week of {week_start.isoformat()}', bold=True)}\n"]
+
+    # Done section
+    if done_this_week:
+        lines.append(f"  {click.style(f'{len(done_this_week)} completed', fg='green')}\n")
+        grouped: dict[str, list] = {}
+        for t in done_this_week:
+            name = Path(t.source_file).stem.replace("-", " ").title()
+            grouped.setdefault(name, []).append(t)
+        for project, group in sorted(grouped.items()):
+            lines.append(f"    {project}:")
+            for t in group:
+                lines.append(f"      [x] {t.description}")
+    else:
+        lines.append("  No tasks completed yet this week.")
+
+    # Still open
+    lines.append(f"\n  {len(still_open)} still open ({len(urgent_open)} urgent)")
+
+    report = "\n".join(lines)
+    click.echo(f"\n{report}\n")
+
+    if send:
+        # Build a plain text version for Telegram
+        tg_lines = [f"Week of {week_start.isoformat()}\n"]
+        if done_this_week:
+            tg_lines.append(f"{len(done_this_week)} completed:\n")
+            grouped2: dict[str, list] = {}
+            for t in done_this_week:
+                name = Path(t.source_file).stem.replace("-", " ").title()
+                grouped2.setdefault(name, []).append(t)
+            for project, group in sorted(grouped2.items()):
+                tg_lines.append(f"\n{project}:")
+                for t in group:
+                    tg_lines.append(f"  [x] {t.description}")
+        tg_lines.append(f"\n{len(still_open)} still open ({len(urgent_open)} urgent)")
+        config = load_config()
+        _send_telegram("\n".join(tg_lines), config)
+
+
 # ── sort ─────────────────────────────────────────────────────────────────
 
 @cli.command()
