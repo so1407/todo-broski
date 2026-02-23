@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Telegram bot for task management. Runs as a long-lived process.
+"""Telegram bot + local web server for task management.
 
-Just chat naturally:
+Chat naturally via Telegram:
   "add fix login bug for trewit, urgent"
   "done with the invoice"
   "what's on my list?"
-  "show me urgent stuff"
-  "daily"
-  "board"
 
-Slash commands still work too: /add /done /list /urgent /daily /board
+Web board at http://localhost:8347 with inline task completion.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -21,6 +19,7 @@ from datetime import date
 from pathlib import Path
 
 import anthropic
+from aiohttp import web
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -52,6 +51,7 @@ logger = logging.getLogger(__name__)
 config = load_config()
 ALLOWED_CHAT_ID = config.get("telegram", {}).get("chat_id")
 AI_MODEL = "claude-haiku-4-5-20251001"
+WEB_PORT = 8347
 
 
 def refresh_board():
@@ -77,7 +77,7 @@ def auth(func):
     return wrapper
 
 
-# ── Core actions (used by both commands and natural language) ─────────────
+# ── Core actions ─────────────────────────────────────────────────────────
 
 def action_add(description: str, client: str | None = None, due: str | None = None,
                urgent: bool = False, effort: str | None = None) -> str:
@@ -121,6 +121,16 @@ def action_done(search: str) -> str:
     return "Multiple matches:\n\n" + "\n".join(lines) + "\n\nBe more specific."
 
 
+def action_done_exact(source_file: str, line_number: int) -> str:
+    """Complete a task by exact file + line number (used by web board)."""
+    filepath = Path(source_file)
+    if not filepath.exists():
+        return "File not found."
+    complete_task(filepath, line_number)
+    refresh_board()
+    return "Done"
+
+
 def action_list(urgent_only: bool = False) -> str:
     tasks = read_all_tasks()
     open_tasks = [t for t in tasks if not t.done]
@@ -157,15 +167,13 @@ def action_daily() -> str:
     return content
 
 
-# ── Natural language handler ─────────────────────────────────────────────
+# ── Natural language parser ──────────────────────────────────────────────
 
 def parse_with_ai(text: str) -> dict | None:
-    """Use Claude to parse natural language into a structured action."""
     client = get_ai_client()
     if not client:
         return None
 
-    # Build context about existing projects
     project_files = [f.stem.replace("-", " ").title()
                      for f in sorted(TASKS_DIR.glob("*.md"))
                      if f.name != "inbox.md"]
@@ -208,7 +216,6 @@ For "done" actions, extract the most distinctive keyword from what they describe
 
     try:
         result_text = response.content[0].text.strip()
-        # Handle markdown code blocks
         if result_text.startswith("```"):
             result_text = re.sub(r"^```\w*\n?", "", result_text)
             result_text = re.sub(r"\n?```$", "", result_text)
@@ -229,7 +236,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\"urgent stuff\"\n"
         "\"daily\"\n"
         "\"board\"\n\n"
-        "Slash commands work too: /add /done /list /urgent /daily /board"
+        f"Web board: http://localhost:{WEB_PORT}"
     )
 
 
@@ -239,7 +246,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         await update.message.reply_text("Usage: /add <task description>")
         return
-    # Let AI parse it for client/due/urgent extraction
     result = parse_with_ai(f"add task: {text}")
     if result and result.get("action") == "add":
         msg = action_add(
@@ -295,7 +301,6 @@ async def cmd_board(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @auth
 async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Parse any message with AI and execute the right action."""
     text = update.message.text.strip()
     if not text:
         return
@@ -303,7 +308,6 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = parse_with_ai(text)
 
     if not result:
-        # AI unavailable, fall back to adding to inbox
         msg = action_add(text)
         await update.message.reply_text(msg)
         return
@@ -319,19 +323,15 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             effort=result.get("effort"),
         )
         await update.message.reply_text(msg)
-
     elif action == "done":
         msg = action_done(result.get("search", text))
         await update.message.reply_text(msg)
-
     elif action == "list":
         msg = action_list(urgent_only=result.get("urgent_only", False))
         await update.message.reply_text(msg, parse_mode="Markdown")
-
     elif action == "daily":
         await update.message.reply_text("Generating...")
         await update.message.reply_text(action_daily())
-
     elif action == "board":
         refresh_board()
         board_path = TASKS_DIR / "board.html"
@@ -341,33 +341,105 @@ async def natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 filename="board.html",
                 caption="Open in your browser",
             )
-
     elif action == "unknown":
-        reply = result.get("reply", "Didn't catch that — try something like 'add fix bug for trewit' or 'show my list'")
+        reply = result.get("reply", "Didn't catch that — try 'add fix bug for trewit' or 'show my list'")
         await update.message.reply_text(reply)
 
 
-def main():
+# ── Web server (serves board + API for done/add) ────────────────────────
+
+async def web_board(request):
+    """Serve the board HTML."""
+    refresh_board()
+    board_path = TASKS_DIR / "board.html"
+    if board_path.exists():
+        return web.FileResponse(board_path)
+    return web.Response(text="No board yet. Add some tasks first.")
+
+
+async def web_done(request):
+    """API: mark a task done by source_file + line_number."""
+    try:
+        data = await request.json()
+        source = data.get("source_file", "")
+        line = int(data.get("line_number", 0))
+        result = action_done_exact(source, line)
+        return web.json_response({"ok": True, "result": result})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+
+async def web_add(request):
+    """API: add a task."""
+    try:
+        data = await request.json()
+        result = action_add(
+            data.get("description", ""),
+            client=data.get("client"),
+            due=data.get("due"),
+            urgent=data.get("urgent", False),
+            effort=data.get("effort"),
+        )
+        return web.json_response({"ok": True, "result": result})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+
+def create_web_app() -> web.Application:
+    app = web.Application()
+    app.router.add_get("/", web_board)
+    app.router.add_post("/api/done", web_done)
+    app.router.add_post("/api/add", web_add)
+    return app
+
+
+# ── Main: run both Telegram bot and web server ──────────────────────────
+
+async def run_all():
     ensure_structure()
     token = config.get("telegram", {}).get("token")
     if not token:
         print("Error: No telegram token in ~/.tasks/config.yaml")
         sys.exit(1)
 
-    app = Application.builder().token(token).build()
+    # Set up Telegram bot
+    tg_app = Application.builder().token(token).build()
+    tg_app.add_handler(CommandHandler("start", cmd_start))
+    tg_app.add_handler(CommandHandler("help", cmd_start))
+    tg_app.add_handler(CommandHandler("add", cmd_add))
+    tg_app.add_handler(CommandHandler("done", cmd_done))
+    tg_app.add_handler(CommandHandler("list", cmd_list))
+    tg_app.add_handler(CommandHandler("urgent", cmd_urgent))
+    tg_app.add_handler(CommandHandler("daily", cmd_daily))
+    tg_app.add_handler(CommandHandler("board", cmd_board))
+    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
-    app.add_handler(CommandHandler("add", cmd_add))
-    app.add_handler(CommandHandler("done", cmd_done))
-    app.add_handler(CommandHandler("list", cmd_list))
-    app.add_handler(CommandHandler("urgent", cmd_urgent))
-    app.add_handler(CommandHandler("daily", cmd_daily))
-    app.add_handler(CommandHandler("board", cmd_board))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, natural_language))
+    # Set up web server
+    web_app = create_web_app()
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
 
-    logger.info("Bot starting...")
-    app.run_polling()
+    # Start both
+    await tg_app.initialize()
+    await tg_app.start()
+    await tg_app.updater.start_polling()
+    await site.start()
+
+    logger.info(f"Bot + web server running on http://localhost:{WEB_PORT}")
+
+    # Keep running
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await tg_app.updater.stop()
+        await tg_app.stop()
+        await tg_app.shutdown()
+        await runner.cleanup()
+
+
+def main():
+    asyncio.run(run_all())
 
 
 if __name__ == "__main__":

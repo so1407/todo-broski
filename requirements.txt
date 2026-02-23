@@ -4,3 +4,4 @@ anthropic
 pyyaml
 python-telegram-bot
 requests
+aiohttp
