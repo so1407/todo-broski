@@ -1,0 +1,6 @@
+click
+jinja2
+anthropic
+pyyaml
+python-telegram-bot
+requests
