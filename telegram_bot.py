@@ -203,9 +203,16 @@ async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @auth
 async def cmd_board(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from board import generate_board
-    path = generate_board(TASKS_DIR)
-    await update.message.reply_text(f"Board regenerated: {path}")
+    refresh_board()
+    board_path = TASKS_DIR / "board.html"
+    if board_path.exists():
+        await update.message.reply_document(
+            document=open(board_path, "rb"),
+            filename="board.html",
+            caption="Open in your browser for the full kanban view",
+        )
+    else:
+        await update.message.reply_text("No board found.")
 
 
 @auth
