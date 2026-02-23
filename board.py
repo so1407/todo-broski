@@ -1,17 +1,19 @@
-"""HTML kanban board generation."""
+"""HTML kanban board generation — mobile-friendly with Telegram deep links."""
 
+import urllib.parse
 from datetime import date, datetime
 from pathlib import Path
 
 from jinja2 import Template
 
-from parser import read_tasks, get_project_heading
+from parser import read_tasks, get_project_heading, load_config
 
 BOARD_TEMPLATE = Template("""\
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30">
 <title>Task Board</title>
 <style>
@@ -19,18 +21,20 @@ BOARD_TEMPLATE = Template("""\
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: #f0f2f5;
-    padding: 24px;
     color: #1a1a1a;
+    padding: 16px;
   }
   header {
-    display: flex; justify-content: space-between; align-items: baseline;
-    margin-bottom: 24px;
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px; flex-wrap: wrap; gap: 8px;
   }
-  header h1 { font-size: 22px; font-weight: 600; }
-  header .meta { color: #888; font-size: 13px; }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .meta { color: #888; font-size: 12px; }
+
+  /* ── Desktop: horizontal columns ── */
   .board {
     display: flex;
-    gap: 16px;
+    gap: 14px;
     overflow-x: auto;
     align-items: flex-start;
     padding-bottom: 16px;
@@ -43,14 +47,35 @@ BOARD_TEMPLATE = Template("""\
     flex-shrink: 0;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
   }
+
+  /* ── Mobile: stacked vertical ── */
+  @media (max-width: 700px) {
+    body { padding: 10px; }
+    .board {
+      flex-direction: column;
+      overflow-x: visible;
+    }
+    .column {
+      min-width: unset;
+      max-width: unset;
+      width: 100%;
+    }
+    header h1 { font-size: 18px; }
+  }
+
   .column-header {
-    padding: 14px 16px 10px;
+    padding: 12px 14px 10px;
     font-weight: 600;
     font-size: 14px;
     border-bottom: 1px solid #f0f0f0;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    position: sticky;
+    top: 0;
+    background: #fff;
+    border-radius: 10px 10px 0 0;
+    z-index: 1;
   }
   .column-header .count {
     background: #e8e8e8;
@@ -60,60 +85,112 @@ BOARD_TEMPLATE = Template("""\
     border-radius: 10px;
     font-weight: 500;
   }
-  .column-body { padding: 8px; }
+  .column-body { padding: 6px; }
+
   .card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
     padding: 10px 12px;
-    margin: 6px 0;
-    border-radius: 6px;
+    margin: 5px 0;
+    border-radius: 8px;
     border-left: 3px solid #ddd;
     background: #fafafa;
-    font-size: 13px;
+    font-size: 14px;
     line-height: 1.4;
+    -webkit-tap-highlight-color: transparent;
   }
   .card.overdue { border-left-color: #e74c3c; background: #fef5f5; }
   .card.urgent { border-left-color: #f39c12; background: #fffcf5; }
   .card.due-soon { border-left-color: #3498db; background: #f5f9fe; }
+
+  .card .done-btn {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 2px solid #ccc;
+    background: none;
+    cursor: pointer;
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    text-decoration: none;
+    color: transparent;
+  }
+  .card .done-btn:hover, .card .done-btn:active {
+    border-color: #4caf50;
+    background: #e8f5e9;
+    color: #4caf50;
+  }
+  .card.overdue .done-btn { border-color: #e57373; }
+  .card.urgent .done-btn { border-color: #ffb74d; }
+
+  .card .card-content { flex: 1; min-width: 0; }
   .card .desc { font-weight: 500; }
   .card .meta-row {
-    display: flex; gap: 8px; margin-top: 4px;
+    display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap;
     font-size: 11px; color: #888;
   }
   .card .meta-row .tag {
     background: #f0f0f0;
     padding: 1px 6px;
     border-radius: 3px;
+    white-space: nowrap;
   }
   .card .meta-row .tag.urgent-tag { background: #fdebd0; color: #b7791f; }
   .card .meta-row .tag.overdue-tag { background: #fadbd8; color: #c0392b; }
+
   .done-section {
     border-top: 1px solid #f0f0f0;
-    margin-top: 8px;
+    margin-top: 6px;
     padding-top: 4px;
   }
   .done-toggle {
     font-size: 12px; color: #aaa; cursor: pointer;
-    padding: 6px 12px;
+    padding: 8px 12px;
     user-select: none;
   }
   .done-toggle:hover { color: #666; }
-  .done-tasks { display: none; padding: 0 8px 8px; }
+  .done-tasks { display: none; padding: 0 6px 8px; }
   .done-tasks.open { display: block; }
   .done-card {
     padding: 6px 12px;
-    margin: 4px 0;
+    margin: 3px 0;
     font-size: 12px;
     color: #aaa;
     text-decoration: line-through;
+    border-radius: 6px;
   }
+
+  /* Stats bar */
+  .stats {
+    display: flex; gap: 16px; margin-bottom: 14px;
+    font-size: 12px; color: #888; flex-wrap: wrap;
+  }
+  .stats .stat { display: flex; align-items: center; gap: 4px; }
+  .stats .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .stats .dot.red { background: #e74c3c; }
+  .stats .dot.orange { background: #f39c12; }
+  .stats .dot.blue { background: #3498db; }
+  .stats .dot.gray { background: #bbb; }
 </style>
 </head>
 <body>
 <header>
   <h1>Task Board</h1>
-  <span class="meta">Generated {{ generated_at }}</span>
+  <span class="meta">{{ generated_at }}</span>
 </header>
+<div class="stats">
+  {% if counts.overdue %}<span class="stat"><span class="dot red"></span> {{ counts.overdue }} overdue</span>{% endif %}
+  {% if counts.urgent %}<span class="stat"><span class="dot orange"></span> {{ counts.urgent }} urgent</span>{% endif %}
+  {% if counts.due_soon %}<span class="stat"><span class="dot blue"></span> {{ counts.due_soon }} due soon</span>{% endif %}
+  <span class="stat"><span class="dot gray"></span> {{ counts.total }} total</span>
+</div>
 <div class="board">
 {% for col in columns %}
+{% if col.active or col.done %}
   <div class="column">
     <div class="column-header">
       {{ col.name }}
@@ -122,12 +199,15 @@ BOARD_TEMPLATE = Template("""\
     <div class="column-body">
     {% for t in col.active %}
       <div class="card {{ t.css_class }}">
-        <div class="desc">{{ t.description }}</div>
-        <div class="meta-row">
-          {% if t.is_overdue %}<span class="tag overdue-tag">overdue</span>{% endif %}
-          {% if t.urgent and not t.is_overdue %}<span class="tag urgent-tag">urgent</span>{% endif %}
-          {% if t.due %}<span class="tag">{{ t.due }}</span>{% endif %}
-          {% if t.effort %}<span class="tag">{{ t.effort }}</span>{% endif %}
+        <a class="done-btn" href="{{ t.done_link }}" title="Mark done">✓</a>
+        <div class="card-content">
+          <div class="desc">{{ t.description }}</div>
+          <div class="meta-row">
+            {% if t.is_overdue %}<span class="tag overdue-tag">overdue</span>{% endif %}
+            {% if t.urgent and not t.is_overdue %}<span class="tag urgent-tag">urgent</span>{% endif %}
+            {% if t.due %}<span class="tag">{{ t.due }}</span>{% endif %}
+            {% if t.effort %}<span class="tag">{{ t.effort }}</span>{% endif %}
+          </div>
         </div>
       </div>
     {% endfor %}
@@ -145,6 +225,7 @@ BOARD_TEMPLATE = Template("""\
     </div>
     {% endif %}
   </div>
+{% endif %}
 {% endfor %}
 </div>
 </body>
@@ -152,11 +233,24 @@ BOARD_TEMPLATE = Template("""\
 """)
 
 
+def _make_done_link(task, bot_username: str) -> str:
+    """Create a Telegram deep link to mark a task done."""
+    # Use first 3+ distinctive words as search term
+    words = task.description.split()
+    search = " ".join(words[:4]) if len(words) > 4 else task.description
+    text = f"/done {search}"
+    encoded = urllib.parse.quote(text)
+    return f"https://t.me/{bot_username}?text={encoded}"
+
+
 def generate_board(tasks_dir: Path) -> Path:
     """Generate board.html from all task files. Returns the output path."""
-    columns = []
+    cfg = load_config()
+    bot_username = cfg.get("telegram", {}).get("bot_username", "sophies_todos_bot")
 
-    # Inbox first, then other projects sorted alphabetically
+    columns = []
+    counts = {"overdue": 0, "urgent": 0, "due_soon": 0, "total": 0}
+
     md_files = sorted(tasks_dir.glob("*.md"))
     inbox = tasks_dir / "inbox.md"
     ordered = []
@@ -169,7 +263,6 @@ def generate_board(tasks_dir: Path) -> Path:
         active = [t for t in tasks if not t.done]
         done = [t for t in tasks if t.done]
 
-        # Sort active: overdue first, then urgent, then due date, then undated
         def sort_key(t):
             if t.is_overdue:
                 return (0, t.due)
@@ -181,22 +274,27 @@ def generate_board(tasks_dir: Path) -> Path:
 
         active.sort(key=sort_key)
 
-        # Add CSS class to each task
         for t in active:
+            counts["total"] += 1
             if t.is_overdue:
                 t.css_class = "overdue"
+                counts["overdue"] += 1
             elif t.urgent:
                 t.css_class = "urgent"
+                counts["urgent"] += 1
             elif t.is_due_soon:
                 t.css_class = "due-soon"
+                counts["due_soon"] += 1
             else:
                 t.css_class = ""
+            t.done_link = _make_done_link(t, bot_username)
 
         name = get_project_heading(md_file)
         columns.append({"name": name, "active": active, "done": done})
 
     html = BOARD_TEMPLATE.render(
         columns=columns,
+        counts=counts,
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
 
