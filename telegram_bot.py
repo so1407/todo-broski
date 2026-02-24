@@ -38,7 +38,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 config = get_config()
-ALLOWED_CHAT_ID = config.get("telegram", {}).get("chat_id")
+_chat_id = os.environ.get("TELEGRAM_CHAT_ID") or config.get("telegram", {}).get("chat_id")
+ALLOWED_CHAT_ID = int(_chat_id) if _chat_id else None
 AI_MODEL = "claude-haiku-4-5-20251001"
 
 
