@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import type { Task, Project } from "@/lib/supabase";
 import TaskCard from "./TaskCard";
 
@@ -12,19 +13,23 @@ export default function Column({
   tasks: Task[];
 }) {
   const [showDone, setShowDone] = useState(false);
+  const { setNodeRef, isOver } = useDroppable({ id: project.id });
 
   const active = tasks.filter((t) => !t.done);
   const done = tasks.filter((t) => t.done);
 
   return (
-    <div className="bg-white rounded-xl min-w-[280px] max-w-[320px] flex-shrink-0 shadow-sm md:max-w-[320px] max-md:min-w-0 max-md:max-w-none max-md:w-full">
+    <div
+      ref={setNodeRef}
+      className={`bg-white rounded-xl min-w-[280px] max-w-[320px] flex-shrink-0 shadow-sm md:max-w-[320px] max-md:min-w-0 max-md:max-w-none max-md:w-full transition-all ${isOver ? "ring-2 ring-blue-400 bg-blue-50/30" : ""}`}
+    >
       <div className="px-3.5 pt-3 pb-2.5 font-semibold text-sm border-b border-gray-100 flex justify-between items-center sticky top-0 bg-white rounded-t-xl z-[1]">
         {project.name}
         <span className="bg-gray-200 text-gray-600 text-[11px] px-2 py-0.5 rounded-xl font-medium">
           {active.length}
         </span>
       </div>
-      <div className="p-1.5">
+      <div className="p-1.5 min-h-[40px]">
         {active.map((t) => (
           <TaskCard key={t.id} task={t} />
         ))}

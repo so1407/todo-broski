@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { useDraggable } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 import type { Task } from "@/lib/supabase";
 import { completeTask, uncompleteTask, updateTask, deleteTask } from "@/lib/hooks";
 
@@ -30,11 +32,20 @@ const checkboxStyles = {
   normal: "border-gray-300",
 };
 
-export default function TaskCard({ task }: { task: Task }) {
+export default function TaskCard({ task, isDragOverlay }: { task: Task; isDragOverlay?: boolean }) {
   const [completing, setCompleting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(task.description);
   const status = getTaskStatus(task);
+
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: task.id,
+    disabled: task.done || editing,
+  });
+
+  const style = transform && !isDragOverlay
+    ? { transform: CSS.Translate.toString(transform) }
+    : undefined;
 
   const handleComplete = async () => {
     setCompleting(true);
@@ -66,8 +77,19 @@ export default function TaskCard({ task }: { task: Task }) {
 
   return (
     <div
-      className={`flex items-start gap-2.5 p-2.5 px-3 my-1.5 rounded-lg border-l-[3px] text-sm leading-relaxed transition-all ${statusStyles[status]} ${completing ? "opacity-40 scale-[0.97] line-through text-gray-400" : ""}`}
+      ref={setNodeRef}
+      style={style}
+      className={`flex items-start gap-2.5 p-2.5 px-3 my-1.5 rounded-lg border-l-[3px] text-sm leading-relaxed transition-all ${statusStyles[status]} ${completing ? "opacity-40 scale-[0.97] line-through text-gray-400" : ""} ${isDragging && !isDragOverlay ? "opacity-30" : ""} ${isDragOverlay ? "shadow-lg rotate-1" : ""}`}
     >
+      {/* Drag handle */}
+      <button
+        {...listeners}
+        {...attributes}
+        className="flex-shrink-0 text-gray-300 hover:text-gray-500 cursor-grab active:cursor-grabbing mt-0.5 text-xs select-none touch-none"
+        title="Drag to move"
+      >
+        ⠿
+      </button>
       <button
         onClick={handleComplete}
         className={`flex-shrink-0 w-[22px] h-[22px] rounded-full border-2 ${checkboxStyles[status]} bg-transparent cursor-pointer mt-0.5 flex items-center justify-center text-xs text-transparent hover:border-green-500 hover:bg-green-50 hover:text-green-500 transition-all`}
