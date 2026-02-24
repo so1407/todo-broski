@@ -1,51 +1,34 @@
-"""Claude API integration for daily list generation and inbox sorting."""
+"""ToDo Schwesti: Claude AI integration for daily list generation and inbox sorting."""
 
-import os
+import re
 from datetime import date
-from pathlib import Path
 
 import anthropic
 
-from parser import (
-    TASKS_DIR,
-    add_task_to_file,
-    client_to_filename,
-    load_config,
-    read_all_tasks,
-    read_tasks,
-    remove_task,
-)
+from packages.core.config import get_anthropic_key
+from packages.core.db import DB
+from packages.core.models import Task
 
 MODEL = "claude-sonnet-4-20250514"
 
 
 def _get_client() -> anthropic.Anthropic:
-    """Create an Anthropic client using config or env var."""
-    config = load_config()
-    api_key = os.environ.get("ANTHROPIC_API_KEY") or config.get("anthropic_api_key")
-    if not api_key:
-        raise SystemExit(
-            "Error: No API key found. Set ANTHROPIC_API_KEY env var or add anthropic_api_key to ~/.tasks/config.yaml"
-        )
-    return anthropic.Anthropic(api_key=api_key)
+    return anthropic.Anthropic(api_key=get_anthropic_key())
 
 
-def generate_daily(tasks_dir: Path = TASKS_DIR, available_hours: int = 6) -> str:
+def generate_daily(available_hours: int = 6) -> str:
     """Generate a daily task list using Claude. Returns markdown string."""
-    tasks = read_all_tasks(tasks_dir)
-    open_tasks = [t for t in tasks if not t.done]
+    tasks = DB.list_tasks(done=False)
 
-    if not open_tasks:
+    if not tasks:
         return "# Daily Tasks\n\nNo open tasks. Enjoy your day!"
 
     today = date.today()
     weekday = today.strftime("%A")
 
-    # Format tasks for the prompt
-    by_project: dict[str, list] = {}
-    for t in open_tasks:
-        project = Path(t.source_file).stem.replace("-", " ").title()
-        by_project.setdefault(project, []).append(t)
+    by_project: dict[str, list[Task]] = {}
+    for t in tasks:
+        by_project.setdefault(t.project_name, []).append(t)
 
     task_text = ""
     for project, group in sorted(by_project.items()):
@@ -95,28 +78,23 @@ Open tasks:
     return response.content[0].text
 
 
-def sort_inbox(tasks_dir: Path = TASKS_DIR) -> list[tuple[str, str]]:
-    """Sort inbox tasks into project files using Claude. Returns [(description, target_file), ...]."""
-    inbox_path = tasks_dir / "inbox.md"
-    inbox_tasks = read_tasks(inbox_path)
-    open_inbox = [t for t in inbox_tasks if not t.done]
+def sort_inbox() -> list[tuple[str, str]]:
+    """Sort inbox tasks into project files using Claude. Returns [(description, target_project), ...]."""
+    inbox_tasks = DB.list_tasks(project_slug="inbox", done=False)
 
-    if not open_inbox:
+    if not inbox_tasks:
         return []
 
-    # Get existing project files
-    project_files = [f.stem.replace("-", " ").title()
-                     for f in sorted(tasks_dir.glob("*.md"))
-                     if f.name != "inbox.md"]
+    projects = DB.list_projects()
+    project_names = [p.name for p in projects if p.slug != "inbox"]
 
-    if not project_files:
-        # No projects yet — ask Claude to suggest project names
+    if not project_names:
         project_list = "(no existing projects — suggest new project names)"
     else:
-        project_list = "\n".join(f"- {p}" for p in project_files)
+        project_list = "\n".join(f"- {p}" for p in project_names)
 
     task_list = ""
-    for i, t in enumerate(open_inbox):
+    for i, t in enumerate(inbox_tasks):
         parts = [t.description]
         if t.due:
             parts.append(f"due {t.due}")
@@ -154,12 +132,12 @@ Respond with ONLY the mapping lines, nothing else."""
         messages=[{"role": "user", "content": prompt}],
     )
 
-    # Parse response and move tasks
     results = []
     lines = response.content[0].text.strip().split("\n")
 
-    # Process in reverse order so line numbers stay valid
-    moves = []
+    # Build project slug lookup
+    slug_map = {p.name.lower(): p.slug for p in projects}
+
     for line in lines:
         line = line.strip()
         if "->" not in line:
@@ -171,29 +149,19 @@ Respond with ONLY the mapping lines, nothing else."""
             continue
         target_name = parts[1].strip()
 
-        if idx < 0 or idx >= len(open_inbox):
+        if idx < 0 or idx >= len(inbox_tasks):
             continue
 
-        # Handle NEW: prefix
         if target_name.upper().startswith("NEW:"):
             target_name = target_name[4:].strip()
 
-        task = open_inbox[idx]
-        filename = client_to_filename(target_name)
-        moves.append((task, filename, target_name))
+        task = inbox_tasks[idx]
+        target_slug = slug_map.get(target_name.lower())
+        if not target_slug:
+            target_slug = re.sub(r"[^a-z0-9]+", "-", target_name.lower()).strip("-")
 
-    # Sort moves by line number descending to preserve indices during removal
-    moves.sort(key=lambda x: x[0].line_number, reverse=True)
+        # Move the task to the target project
+        DB.move_task(task.id, target_slug)
+        results.append((task.description, target_name))
 
-    for task, filename, display_name in moves:
-        # Remove from inbox
-        removed = remove_task(inbox_path, task.line_number)
-        if removed:
-            # Add to target project file
-            from parser import task_to_line
-            target_path = tasks_dir / filename
-            add_task_to_file(target_path, task_to_line(task))
-            results.append((task.description, filename))
-
-    results.reverse()  # Back to original order for display
     return results

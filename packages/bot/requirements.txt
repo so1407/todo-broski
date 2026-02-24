@@ -1,6 +1,4 @@
-click
 anthropic
-pyyaml
 python-telegram-bot
-requests
 supabase
+pyyaml

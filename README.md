@@ -1,31 +1,26 @@
-# todo-schwesti
+# ToDo Schwesti
 
-Personal task management CLI + Telegram bot + kanban board. Markdown files as source of truth, AI-powered daily planning, zero-maintenance by design.
+Personal task management: CLI + Telegram bot + real-time kanban board. Supabase as the source of truth, deployable anywhere.
 
-## Why
+## Architecture
 
-Kanban boards die when you're busy — which is exactly when you need them. This tool keeps the overhead near zero:
-
-- **Capture** a task in 3 seconds (CLI or Telegram)
-- **AI sorts** your inbox into projects
-- **AI generates** a realistic daily to-do list at 18:00
-- **Telegram bot** sends it to your phone
-- All data is just markdown files you can edit by hand
+```
+Supabase (PostgreSQL + real-time)    ← source of truth
+  ├── Vercel (Next.js kanban board)  ← accessible from any device
+  ├── Railway (Telegram bot, 24/7)   ← no laptop dependency
+  ├── CLI (local, talks to Supabase) ← fast terminal capture
+  └── Markdown export (backup only)  ← version-controlled snapshots
+```
 
 ## Quick start
 
 ```bash
-# Clone
-git clone https://github.com/so1407/todo-broski.git
-cd todo-broski
+git clone https://github.com/so1407/todo-schwesti.git
+cd todo-schwesti
 
-# Install dependencies
 pip install -r requirements.txt
 
-# First run creates ~/.tasks/ with template config
-python task_cli.py list
-
-# Edit config with your API keys
+# Edit config with your Supabase + API keys
 nano ~/.tasks/config.yaml
 
 # Add the shell alias
@@ -35,42 +30,53 @@ source ~/.zshrc
 
 ## Setup
 
-### 1. Anthropic API key
+### 1. Supabase
 
-Get one at [console.anthropic.com](https://console.anthropic.com). Add to `~/.tasks/config.yaml`:
+1. Create a project at [supabase.com](https://supabase.com)
+2. Run `scripts/setup.sql` in the SQL Editor
+3. Add credentials to `~/.tasks/config.yaml`:
+
+```yaml
+supabase:
+  url: https://your-project.supabase.co
+  key: your-anon-key
+```
+
+### 2. Migrate existing tasks
+
+```bash
+python scripts/migrate.py --dry-run   # preview
+python scripts/migrate.py             # run for real
+```
+
+### 3. Anthropic API key
 
 ```yaml
 anthropic_api_key: sk-ant-...
 ```
 
-### 2. Telegram bot
+### 4. Telegram bot
 
-1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot`
-2. Send any message to your new bot
-3. Add to config:
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot`
+2. Add to config:
 
 ```yaml
 telegram:
   token: "your-bot-token"
-  chat_id: your-chat-id  # get from https://api.telegram.org/bot<TOKEN>/getUpdates
-  bot_username: your_bot_username
+  chat_id: your-chat-id
+  bot_username: your_bot
 ```
 
-### 3. Start the bot + web server
+### 5. Deploy
 
-```bash
-python telegram_bot.py
+- **Web board:** Deploy `packages/web/` to Vercel. Set `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+- **Telegram bot:** Deploy to Railway. Set `SUPABASE_URL`, `SUPABASE_KEY`, `TELEGRAM_TOKEN`, `ANTHROPIC_API_KEY`.
+
+Add the board URL to config:
+
+```yaml
+vercel_url: https://your-app.vercel.app
 ```
-
-This runs both:
-- Telegram bot (natural language task management)
-- Web board at `http://localhost:8347`
-
-To run as a background service on macOS, create a launchd plist (see below).
-
-### 4. Auto-daily at 18:00 (optional)
-
-Create `~/Library/LaunchAgents/com.tasks.daily-list.plist` for automatic daily list generation and Telegram delivery.
 
 ## Usage
 
@@ -86,12 +92,13 @@ task inbox                            # unsorted tasks
 task sort                             # AI sorts inbox into projects
 task daily                            # AI generates daily list
 task daily --send                     # + sends via Telegram
-task board                            # opens HTML kanban in browser
+task board                            # opens kanban board
+task export                           # Supabase → markdown backup
 ```
 
 ### Telegram bot
 
-Just chat naturally — no slash commands needed:
+Chat naturally:
 
 ```
 "add fix login for trewit, urgent, due friday"
@@ -99,93 +106,31 @@ Just chat naturally — no slash commands needed:
 "what's on my list?"
 "urgent stuff"
 "daily"
+"board"
 ```
 
-Slash commands work too: `/add`, `/done`, `/list`, `/urgent`, `/daily`, `/board`
+Slash commands: `/add`, `/done`, `/list`, `/urgent`, `/daily`, `/week`, `/board`
 
 ### Web board
 
-Open `http://localhost:8347` in your browser. Click the circle next to any task to mark it done — no page reload needed.
+Real-time kanban at your Vercel URL. Click-to-complete, inline edit, search, mobile-responsive.
 
-## Task format
-
-Tasks live in markdown files in `~/.tasks/`, one per project:
-
-```markdown
-# Acme Corp
-
-## Active
-- [ ] Write Q1 proposal @due(2026-02-25) @urgent @effort(2h)
-- [ ] Send invoice @effort(15m)
-
-## Done
-- [x] Kick-off meeting @done(2026-02-20)
-```
-
-Three tags: `@due(YYYY-MM-DD)`, `@urgent`, `@effort(Xh/Xm)`. That's it.
-
-## Architecture
+## Repo structure
 
 ```
-~/.tasks/                  # Your data (markdown files)
-    config.yaml            # API keys, preferences
-    inbox.md               # Quick capture
-    acme-corp.md           # One file per project
-    daily/2026-02-23.md    # AI-generated daily lists
-
-~/task-cli/                # The tool (4 Python files)
-    parser.py              # Markdown parsing + file ops
-    task_cli.py            # CLI commands (click)
-    ai.py                  # Claude API integration
-    board.py               # HTML kanban generation
-    telegram_bot.py        # Telegram bot + web server
+todo-schwesti/
+  packages/
+    core/           # Shared Python: db.py, config.py, models.py, markdown.py
+    cli/            # CLI setup
+    bot/            # Telegram bot (Railway deployment)
+    web/            # Next.js board (Vercel deployment)
+  scripts/
+    migrate.py      # Markdown → Supabase migration
+    setup.sql       # Database schema
+  task_cli.py       # CLI entry point
+  ai.py             # Claude AI integration
+  telegram_bot.py   # Telegram bot entry point
 ```
-
-## macOS launchd setup
-
-**Telegram bot + web server** (`~/Library/LaunchAgents/com.tasks.telegram-bot.plist`):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.tasks.telegram-bot</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/python3</string>
-        <string>/path/to/task-cli/telegram_bot.py</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>WorkingDirectory</key><string>/path/to/task-cli</string>
-</dict>
-</plist>
-```
-
-**Daily list at 18:00** (`~/Library/LaunchAgents/com.tasks.daily-list.plist`):
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.tasks.daily-list</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/python3</string>
-        <string>/path/to/task-cli/task_cli.py</string>
-        <string>daily</string>
-        <string>--send</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
-    <key>WorkingDirectory</key><string>/path/to/task-cli</string>
-</dict>
-</plist>
-```
-
-Load with: `launchctl load ~/Library/LaunchAgents/com.tasks.*.plist`
 
 ## License
 
