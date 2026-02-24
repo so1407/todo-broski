@@ -1,4 +1,4 @@
-# todo-broski
+# todo-schwesti
 
 Personal task management CLI + Telegram bot + kanban board. Markdown files as source of truth, AI-powered daily planning, zero-maintenance by design.
 
